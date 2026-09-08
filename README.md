@@ -1,8 +1,11 @@
 # Google Spark MCP Skills Registry
 
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/AI7USER/spark-skills-mcp)
+
 A 24/7 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server providing on-demand agent skills to **Google Spark (Gemini Spark)**.
 
 Hosted on [Render](https://render.com) for always-on availability, allowing Spark to dynamically query and apply skills anytime—even when your personal computer is turned off.
+
 
 ---
 
