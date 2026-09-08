@@ -105,7 +105,31 @@ app.get("/api/skills/:name", (req, res) => {
   res.json(skill);
 });
 
-// 3. MCP Unified Handler (handles both /mcp and /sse for GET and POST)
+// 3. RFC 9728 OAuth Protected Resource Metadata (Tells Google Spark OAuth is not required)
+const oauthMetadataHandler = (req: express.Request, res: express.Response) => {
+  res.json({
+    resource: "https://spark-skills-mcp.onrender.com/mcp",
+    authorization_servers: [],
+    scopes_supported: [],
+    resource_name: "Google Spark Skills Registry",
+    resource_documentation: "https://spark-skills-mcp.onrender.com",
+  });
+};
+
+app.get("/.well-known/oauth-protected-resource", oauthMetadataHandler);
+app.get("/.well-known/oauth-protected-resource/mcp", oauthMetadataHandler);
+app.get("/.well-known/oauth-authorization-server", (req, res) => {
+  res.status(404).end();
+});
+
+// 4. Handle HEAD probes from Google (Vital: Google verifies endpoint with HEAD /mcp)
+app.head(["/mcp", "/sse", "/"], (req, res) => {
+  res.setHeader("Content-Type", "application/json");
+  res.setHeader("mcp-protocol-version", "2024-11-05");
+  res.status(200).end();
+});
+
+// 5. MCP Unified Handler (handles both /mcp and /sse for GET and POST)
 const handleMcp = async (req: express.Request, res: express.Response) => {
   try {
     await streamableTransport.handleRequest(req, res);
