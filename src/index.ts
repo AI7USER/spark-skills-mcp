@@ -8,6 +8,26 @@ import { createMcpServer } from "./tools.js";
 
 dotenv.config();
 
+const logs: string[] = [];
+const logMsg = (type: string, ...args: any[]) => {
+  const line = `[${new Date().toISOString()}] [${type}] ${args
+    .map((a) => (typeof a === "object" ? JSON.stringify(a) : String(a)))
+    .join(" ")}`;
+  logs.push(line);
+  if (logs.length > 200) logs.shift();
+};
+
+const origLog = console.log;
+const origErr = console.error;
+console.log = (...args) => {
+  logMsg("LOG", ...args);
+  origLog(...args);
+};
+console.error = (...args) => {
+  logMsg("ERR", ...args);
+  origErr(...args);
+};
+
 const app = express();
 
 // Full permissive CORS for web clients (including Gemini)
@@ -71,6 +91,10 @@ app.get("/api/skills", (req, res) => {
     total: registry.getCount(),
     skills: registry.listSkills(category),
   });
+});
+
+app.get("/api/logs", (req, res) => {
+  res.json(logs);
 });
 
 app.get("/api/skills/:name", (req, res) => {
