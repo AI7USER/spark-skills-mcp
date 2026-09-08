@@ -2,14 +2,40 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import path from "node:path";
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { SkillRegistry } from "./registry.js";
 import { createMcpServer } from "./tools.js";
 
 dotenv.config();
 
 const app = express();
-app.use(cors());
+
+// Full permissive CORS for web clients (including Gemini)
+app.use(
+  cors({
+    origin: "*",
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "mcp-session-id",
+      "mcp-protocol-version",
+      "accept",
+    ],
+    exposedHeaders: ["mcp-session-id", "mcp-protocol-version", "content-type"],
+  })
+);
+
+// Logging middleware for troubleshooting incoming connections
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`, {
+    origin: req.headers.origin,
+    accept: req.headers.accept,
+    contentType: req.headers["content-type"],
+    userAgent: req.headers["user-agent"],
+  });
+  next();
+});
 
 const port = process.env.PORT || 10000;
 const skillsPath = process.env.SKILLS_DIR || path.resolve(process.cwd(), "skills");
@@ -19,8 +45,14 @@ registry.loadSkills();
 
 const mcpServer = createMcpServer(registry);
 
-// Store active transport
-let transport: SSEServerTransport | null = null;
+// Modern Streamable HTTP MCP Transport (compatible with /mcp and /sse)
+const streamableTransport = new StreamableHTTPServerTransport({
+  sessionIdGenerator: undefined, // Stateless mode for resilient cloud hosting
+  enableJsonResponse: true,      // Supports both SSE streaming and direct JSON responses
+});
+
+// Connect MCP server to transport on startup
+await mcpServer.connect(streamableTransport);
 
 // 1. Health check for Render and monitoring
 app.get("/health", (req, res) => {
@@ -49,26 +81,27 @@ app.get("/api/skills/:name", (req, res) => {
   res.json(skill);
 });
 
-// 3. MCP SSE endpoint (GET /sse)
-app.get("/sse", async (req, res) => {
-  console.log("[MCP SSE] Client connected from:", req.ip);
-  transport = new SSEServerTransport("/messages", res);
-  await mcpServer.connect(transport);
-
-  req.on("close", () => {
-    console.log("[MCP SSE] Client disconnected");
-  });
-});
-
-// 4. MCP message endpoint (POST /messages)
-app.post("/messages", async (req, res) => {
-  if (!transport) {
-    return res.status(400).json({ error: "No active SSE transport connection" });
+// 3. MCP Unified Handler (handles both /mcp and /sse for GET and POST)
+const handleMcp = async (req: express.Request, res: express.Response) => {
+  try {
+    await streamableTransport.handleRequest(req, res);
+  } catch (err) {
+    console.error("[MCP Error]:", err);
+    if (!res.headersSent) {
+      res.status(500).json({
+        jsonrpc: "2.0",
+        error: { code: -32603, message: "Internal server error" },
+        id: null,
+      });
+    }
   }
-  await transport.handlePostMessage(req, res);
-});
+};
 
-// Root status page
+app.all("/mcp", handleMcp);
+app.all("/sse", handleMcp);
+app.post("/messages", handleMcp);
+
+// 4. Root status page
 app.get("/", (req, res) => {
   res.send(`
     <!DOCTYPE html>
@@ -77,24 +110,26 @@ app.get("/", (req, res) => {
         <title>Google Spark MCP Skills Registry</title>
         <style>
           body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #f8fafc; padding: 2rem; }
-          .card { background: #1e293b; border-radius: 12px; padding: 1.5rem; max-width: 600px; margin: 0 auto; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
-          h1 { color: #38bdf8; font-size: 1.5rem; }
-          code { background: #334155; padding: 2px 6px; border-radius: 4px; color: #a5f3fc; }
-          .badge { display: inline-block; background: #059669; color: white; padding: 4px 8px; border-radius: 9999px; font-size: 0.8rem; font-weight: bold; }
+          .card { background: #1e293b; border-radius: 12px; padding: 1.5rem; max-width: 650px; margin: 0 auto; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+          h1 { color: #38bdf8; font-size: 1.5rem; margin-top: 0.5rem; }
+          code { background: #334155; padding: 3px 8px; border-radius: 4px; color: #a5f3fc; font-size: 0.95rem; }
+          .badge { display: inline-block; background: #059669; color: white; padding: 4px 10px; border-radius: 9999px; font-size: 0.8rem; font-weight: bold; }
+          ul { line-height: 1.8; }
         </style>
       </head>
       <body>
         <div class="card">
-          <span class="badge">ONLINE 24/7</span>
+          <span class="badge">ONLINE 24/7 (FREE TIER)</span>
           <h1>Google Spark MCP Skill Registry</h1>
           <p>This server provides on-demand agent skills to <strong>Google Spark</strong> over the Model Context Protocol (MCP).</p>
           <p><strong>Available Skills:</strong> ${registry.getCount()} skills ready</p>
-          <hr style="border-color: #334155; margin: 1rem 0;" />
-          <p><strong>Endpoints:</strong></p>
+          <hr style="border-color: #334155; margin: 1.5rem 0;" />
+          <p><strong>MCP Connection Endpoints:</strong></p>
           <ul>
-            <li><code>/sse</code> - MCP Server-Sent Events Endpoint</li>
-            <li><code>/health</code> - Service Health Check</li>
-            <li><code>/api/skills</code> - JSON Catalog of Skills</li>
+            <li><strong>Primary MCP Endpoint:</strong> <code>https://spark-skills-mcp.onrender.com/mcp</code></li>
+            <li><strong>SSE Endpoint:</strong> <code>https://spark-skills-mcp.onrender.com/sse</code></li>
+            <li><strong>Health Check:</strong> <code>https://spark-skills-mcp.onrender.com/health</code></li>
+            <li><strong>Skills Catalog (JSON):</strong> <code>https://spark-skills-mcp.onrender.com/api/skills</code></li>
           </ul>
         </div>
       </body>
@@ -103,8 +138,8 @@ app.get("/", (req, res) => {
 });
 
 app.listen(port, () => {
-  console.log(`[MCP Server] Listening on http://localhost:${port}`);
-  console.log(`[MCP Server] SSE Endpoint: http://localhost:${port}/sse`);
-  console.log(`[MCP Server] Health Check: http://localhost:${port}/health`);
+  console.log(`[MCP Server] Listening on port ${port}`);
+  console.log(`[MCP Server] /mcp endpoint ready`);
+  console.log(`[MCP Server] /sse endpoint ready`);
   console.log(`[MCP Server] Total Skills Loaded: ${registry.getCount()}`);
 });
